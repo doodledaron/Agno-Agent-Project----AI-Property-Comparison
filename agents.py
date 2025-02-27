@@ -147,9 +147,6 @@ def process_property_url(url: str, api_provider="openai", api_key=None, model_id
         size_match = re.search(r'(\d+)\s*sq(?:ft|\.ft\.)', raw_text) or re.search(r'size["\']?:\s*(\d+)', raw_text)
         size = size_match.group(1) if size_match else "Not available"
         
-        # Extract image
-        image_match = re.search(r'src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|gif|webp))["\']', raw_text, re.IGNORECASE)
-        main_image = image_match.group(1) if image_match else None
         
         # Return basic property data
         return {
@@ -164,10 +161,6 @@ def process_property_url(url: str, api_provider="openai", api_key=None, model_id
             "property_type": "Not specified",
             "facilities": [],
             "amenities": {},
-            "images": {
-                "main_image": main_image,
-                "gallery": []
-            },
             "listing_url": url
         }
             
@@ -182,7 +175,6 @@ def process_property_url(url: str, api_provider="openai", api_key=None, model_id
             "property_type": "Not specified",
             "facilities": [],
             "amenities": {},
-            "images": {"main_image": None, "gallery": []},
             "listing_url": url,
             "error": f"Error: {str(e)}"
         }
@@ -205,12 +197,15 @@ def find_comparable_properties(
         price = price.replace("RM", "").replace("/mo", "").strip()
     beds = reference_property.get("details", {}).get("beds", "")
     reference_url = reference_property.get("listing_url", "")
+    reference_title = reference_property.get("title", "Unknown Property")
 
     # Enhanced prompt to get detailed property info including tenure, listing type, and facilities
+    # Now with explicit instruction to find different property titles
     prompt = f"""
     Find 2 similar property listings to this reference property, 
-    ensuring they are DIFFERENT properties:
+    ensuring they have DIFFERENT TITLES and are in the same location:
     
+    - Reference Property Title: "{reference_title}"
     - Location: {location}
     - Price: up to RM {price}
     - Bedrooms: {beds}
@@ -219,14 +214,15 @@ def find_comparable_properties(
     Budget: RM {user_preferences.get('budget_range', {}).get('min', 0)}-{user_preferences.get('budget_range', {}).get('max', 0)}
     
     CRITICAL REQUIREMENTS: 
-    1. Do NOT include this reference property URL: {reference_url}
-    2. Extract the property size in square feet 
-    3. Calculate the price per square foot 
-    4. Determine if it's FREEHOLD or LEASEHOLD
-    5. Specify if it's FOR SALE or FOR RENT
-    6. Extract at least 3-5 common facilities (pool, gym, security, parking, etc.)
-    7. Include FULL direct URLs from iProperty.com.my or PropertyGuru.com.my
-    8. Extract one main image URL for each property
+    1. Do NOT include the reference property with title "{reference_title}"
+    2. Do NOT include this reference property URL: {reference_url}
+    3. Properties MUST be in the same location: {location}
+    4. Extract the property size in square feet 
+    5. Calculate the price per square foot 
+    6. Determine if it's FREEHOLD or LEASEHOLD
+    7. Specify if it's FOR SALE or FOR RENT
+    8. Extract at least 3-5 common facilities (pool, gym, security, parking, etc.)
+    9. Include FULL direct URLs from iProperty.com.my or PropertyGuru.com.my
     
     For each property, crawl the full property page to extract all required details.
     
@@ -251,22 +247,34 @@ def find_comparable_properties(
     ```
     """
 
-    # Fetch results
-    response = comparison_agent.run(prompt)
+    # To reduce token consumption, let's limit the initial search to just the basic information
+    # and then fetch additional details only for the properties we find
+    search_prompt = f"""
+    Find 2 different property listings in {location} similar to reference property "{reference_title}".
+    DO NOT include the reference property.
+    Only return properties with different titles.
+    Budget: RM {user_preferences.get('budget_range', {}).get('min', 0)}-{user_preferences.get('budget_range', {}).get('max', 0)}
+    
+    Return only title, location, price, and full URL to the property listing.
+    Format as simple JSON array.
+    """
+
+    # Fetch results with reduced token usage
+    initial_response = comparison_agent.run(search_prompt)
     
     # Parse the response
     properties_list = []
     
     try:
-        if hasattr(response, 'content'):
-            if isinstance(response.content, list):
-                properties_list = response.content
-            elif isinstance(response.content, dict) and "properties" in response.content:
-                properties_list = response.content["properties"]
-            elif isinstance(response.content, str):
+        if hasattr(initial_response, 'content'):
+            if isinstance(initial_response.content, list):
+                properties_list = initial_response.content
+            elif isinstance(initial_response.content, dict) and "properties" in initial_response.content:
+                properties_list = initial_response.content["properties"]
+            elif isinstance(initial_response.content, str):
                 # Try extracting JSON
-                if "```json" in response.content:
-                    json_text = response.content.split("```json")[1].split("```")[0].strip()
+                if "```json" in initial_response.content:
+                    json_text = initial_response.content.split("```json")[1].split("```")[0].strip()
                     result = json.loads(json_text)
                     if isinstance(result, list):
                         properties_list = result
@@ -277,8 +285,8 @@ def find_comparable_properties(
         processed_properties = []
         
         for property_item in properties_list:
-            # Skip if this matches the reference URL
-            if property_item.get("link") == reference_url:
+            # Skip if this matches the reference URL or title
+            if property_item.get("link") == reference_url or property_item.get("title") == reference_title:
                 continue
                 
             # Ensure URL is complete
@@ -288,26 +296,20 @@ def find_comparable_properties(
                 elif "propertyguru" in property_item["link"]:
                     property_item["link"] = f"https://www.propertyguru.com.my{property_item['link']}"
             
-            # If we don't have key data, fetch it directly
-            missing_data = (
-                not property_item.get("size") or 
-                not property_item.get("price_per_sqft") or
-                not property_item.get("tenure") or
-                not property_item.get("listing_type") or
-                not property_item.get("facilities")
-            )
-            
-            if missing_data and property_item.get("link"):
+            # Now fetch detailed information one property at a time to control token usage
+            if property_item.get("link"):
                 detail_prompt = f"""
                 Extract ONLY the following details from this property listing: {property_item['link']}
+                Keep your response concise and focused on just these details.
                 
                 Return ONLY a JSON object with these fields:
                 {{
                     "size": 1000,                                         // Size in square feet (number only)
                     "price": 500000,                                      // Price in RM (number only)
+                    "bedrooms": 3,                                        // Number of bedrooms
                     "tenure": "Freehold",                                 // Either "Freehold" or "Leasehold"
                     "listing_type": "For Sale",                           // Either "For Sale" or "For Rent"
-                    "facilities": ["Swimming Pool", "Gym", "Security"]    // List of facilities
+                    "facilities": ["Swimming Pool", "Gym", "Security"]    // List of facilities (limit to 5)
                 }}
                 """
                 
@@ -347,15 +349,16 @@ def find_comparable_properties(
                             except:
                                 pass
                         
-                        # Tenure (Freehold/Leasehold)
+                        # Additional fields
+                        if details.get("bedrooms"):
+                            property_item["bedrooms"] = details["bedrooms"]
+                        
                         if details.get("tenure"):
                             property_item["tenure"] = details["tenure"]
                         
-                        # Listing Type (For Sale/For Rent)
                         if details.get("listing_type"):
                             property_item["listing_type"] = details["listing_type"]
                         
-                        # Facilities
                         if details.get("facilities") and isinstance(details["facilities"], list):
                             property_item["facilities"] = details["facilities"]
                         
@@ -364,18 +367,6 @@ def find_comparable_properties(
                             property_item["price_per_sqft"] = round(property_item["price_numeric"] / property_item["size"])
                 except Exception as detail_error:
                     print(f"Error extracting details: {detail_error}")
-            
-            # Fetch missing images
-            if not property_item.get("main_image") and property_item.get("link"):
-                image_prompt = f"Extract ONLY the main property image URL from {property_item['link']}."
-                image_response = comparison_agent.run(image_prompt)
-                
-                if hasattr(image_response, 'content') and isinstance(image_response.content, str):
-                    url_match = re.search(r'(https?://[^\s"\']+\.(?:jpg|jpeg|png|gif|webp))', 
-                                       image_response.content, 
-                                       re.IGNORECASE)
-                    if url_match:
-                        property_item["main_image"] = url_match.group(1)
             
             # Calculate price per sqft if we don't have it already
             if not property_item.get("price_per_sqft") and property_item.get("size") and property_item.get("price"):
@@ -414,7 +405,8 @@ def find_comparable_properties(
     except Exception as e:
         print(f"Error processing comparable properties: {str(e)}")
         return []
-
+    
+    
 def generate_final_recommendation(
     reference_property: Dict[str, Any],
     comparable_properties: List[Dict[str, Any]],
