@@ -79,7 +79,7 @@ def display_header():
 
 
 def url_input_step():
-    """Handle the property URL input step."""
+    """Handle the property URL input step with expanded examples."""
     st.header("Step 1: Property Details")
     st.markdown("Enter the URL of a Malaysian property listing you're interested in purchasing.")
     
@@ -101,62 +101,85 @@ def url_input_step():
         placeholder=example_url
     )
     
-    # Quick examples to help users
+    # Quick examples to help users - expanded with more options
     st.markdown("#### Quick Examples")
-    example_col1, example_col2 = st.columns(2)
     
-    with example_col1:
-        if st.button("Example: iProperty Condo"):
-            st.session_state.property_url = "https://www.iproperty.com.my/sale/kuala-lumpur-58jok/condominium/?q=Petaling%20Jaya&l1"
+    # Create a 2x2 grid for examples
+    example_row1_col1, example_row1_col2 = st.columns(2)
+    example_row2_col1, example_row2_col2 = st.columns(2)
+    
+    with example_row1_col1:
+        if st.button("iProperty House (Sale)", key="iproperty_house", use_container_width=True):
+            st.session_state.property_url = "https://www.iproperty.com.my/property/bangsar/sale-104072500/"
             st.session_state.example_site = "iproperty"
             st.rerun()
     
-    with example_col2:
-        if st.button("Example: PropertyGuru Apartment"):
-            st.session_state.property_url = "https://www.propertyguru.com.my/property-listing/residensi-brickfields-for-rent-by-loges-42669947"
+    with example_row1_col2:
+        if st.button("iProperty Condo (Rent)", key="iproperty_condo", use_container_width=True):
+            st.session_state.property_url = "https://www.iproperty.com.my/property/kampung-kerinchi-bangsar-south/secoya-residence/rent-108241524/"
+            st.session_state.example_site = "iproperty"
+            st.rerun()
+    
+    with example_row2_col1:
+        if st.button("PropertyGuru House (Sale)", key="pg_house", use_container_width=True):
+            st.session_state.property_url = "https://www.propertyguru.com.my/property-listing/petaling-jaya-for-sale-by-wes-chang-41137999"
             st.session_state.example_site = "propertyguru"
             st.rerun()
+    
+    with example_row2_col2:
+        if st.button("PropertyGuru Condo (Rent)", key="pg_condo", use_container_width=True):
+            st.session_state.property_url = "https://www.propertyguru.com.my/property-listing/sunsuria-forum-serviced-apartment-for-rent-by-ken-tan-42881000"
+            st.session_state.example_site = "propertyguru"
+            st.rerun()
+    
+    # Add helpful caption
+    st.caption("Click any example to load a sample property listing URL")
     
     # Validation warning
     if property_url and not ("iproperty.com.my" in property_url or "propertyguru.com.my" in property_url):
         st.warning("⚠️ This application works best with iProperty and PropertyGuru listings. Other websites may not be analyzed correctly.")
     
-    # Analyze button
-    if st.button("Analyze Property", type="primary"):
-        if not property_url:
-            st.error("Please enter a property URL")
-            return
-        
-        st.session_state.property_url = property_url
-        
-        with st.spinner("Extracting property details from Malaysian property website..."):
-            try:
-                # Progress indicator
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # Step 1: Extract property details
-                status_text.text("Crawling property website...")
-                progress_bar.progress(25)
-                
-                reference_property = process_property_url(property_url)
-                
-                # Update progress
-                status_text.text("Processing property data...")
-                progress_bar.progress(75)
-                
-                if reference_property and "title" in reference_property:
-                    st.session_state.reference_property = reference_property
-                    status_text.text("Property details extracted successfully!")
-                    progress_bar.progress(100)
+    # Create space before the analyze button
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Analyze button - centered with increased width
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("Analyze Property", type="primary", use_container_width=True):
+            if not property_url:
+                st.error("Please enter a property URL")
+                return
+            
+            st.session_state.property_url = property_url
+            
+            with st.spinner("Extracting property details from Malaysian property website..."):
+                try:
+                    # Progress indicator
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
                     
-                    st.session_state.step = 2
-                    st.rerun()
-                else:
-                    st.error("Could not extract property details. Please try another URL or use the manual entry option.")
-                
-            except Exception as e:
-                st.error(f"Error extracting property details: {str(e)}")
+                    # Step 1: Extract property details
+                    status_text.text("Crawling property website...")
+                    progress_bar.progress(25)
+                    
+                    reference_property = process_property_url(property_url)
+                    
+                    # Update progress
+                    status_text.text("Processing property data...")
+                    progress_bar.progress(75)
+                    
+                    if reference_property and "title" in reference_property:
+                        st.session_state.reference_property = reference_property
+                        status_text.text("Property details extracted successfully!")
+                        progress_bar.progress(100)
+                        
+                        st.session_state.step = 2
+                        st.rerun()
+                    else:
+                        st.error("Could not extract property details. Please try another URL or use the manual entry option.")
+                    
+                except Exception as e:
+                    st.error(f"Error extracting property details: {str(e)}")
 
 
 def preferences_input_step():
