@@ -21,74 +21,75 @@ load_dotenv()
 # Get API keys from environment variables
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 
-# Default model to use for agents
-DEFAULT_MODEL = OpenAIChat(id="gpt-4o-mini")
+# get default model based on provider and API key
+def get_default_model(api_provider="openai", api_key=None, model_id=None):
+    """Get the appropriate model based on provider and API key."""
+    if api_provider == "openai":
+        return OpenAIChat(api_key=api_key, id=model_id or "gpt-4o-mini")
+    else:  # groq
+        return Groq(api_key=api_key, id=model_id or "llama3-70b-8192")
 
 
-def create_crawl_agent() -> Agent:
-    """
-    Creates an agent specialized in crawling property websites with image extraction.
-    """
+def create_crawl_agent(firecrawl_api_key=None) -> Agent:
+    """Creates an agent specialized in crawling property websites with image extraction."""
     return Agent(
-        tools=[FirecrawlTools(api_key=FIRECRAWL_API_KEY, scrape=True, crawl=True)],
+        tools=[FirecrawlTools(api_key=firecrawl_api_key, scrape=True, crawl=True)],
         show_tool_calls=True,
         markdown=True,
     )
 
-
-def create_format_agent() -> Agent:
-    """
-    Creates an agent specialized in formatting raw data into structured JSON.
-    """
+def create_format_agent(api_provider="openai", api_key=None, model_id=None) -> Agent:
+    """Creates an agent specialized in formatting raw data into structured JSON."""
+    model = get_default_model(api_provider, api_key, model_id)
     return Agent(
-        model=DEFAULT_MODEL,
+        model=model,
         show_tool_calls=False,
         markdown=True,
     )
 
-
-def create_property_comparison_agent() -> Agent:
-    """
-    Creates an agent specialized in finding similar Malaysian properties with images.
-    """
+def create_property_comparison_agent(api_provider="openai", api_key=None, model_id=None, firecrawl_api_key=None) -> Agent:
+    """Creates an agent specialized in finding similar Malaysian properties with images."""
+    model = get_default_model(api_provider, api_key, model_id)
     return Agent(
-        model=DEFAULT_MODEL,
+        model=model,
         tools=[
             GoogleSearchTools(),
-            FirecrawlTools(api_key=FIRECRAWL_API_KEY, scrape=True, crawl=True),
+            FirecrawlTools(api_key=firecrawl_api_key, scrape=True, crawl=True),
             CalculatorTools()
         ],
         show_tool_calls=True,
         markdown=True,
     )
 
-
-def create_main_agent() -> Agent:
-    """
-    Creates the main control agent.
-    """
+def create_main_agent(api_provider="openai", api_key=None, model_id=None) -> Agent:
+    """Creates the main control agent."""
+    model = get_default_model(api_provider, api_key, model_id)
     return Agent(
-        model=DEFAULT_MODEL,
+        model=model,
         markdown=True,
         show_tool_calls=True,
     )
 
-
-def process_property_url(url: str) -> Dict[str, Any]:
+def process_property_url(url: str, api_provider="openai", api_key=None, model_id=None, firecrawl_api_key=None) -> Dict[str, Any]:
     """
     Extract information from a property listing URL with images.
     """
     try:
         # Create agents
-        crawl_agent = create_crawl_agent()
-        format_agent = create_format_agent()
+        crawl_agent = create_crawl_agent(firecrawl_api_key=firecrawl_api_key)
+        format_agent = create_format_agent(api_provider=api_provider, api_key=api_key, model_id=model_id)
         
-        # Crawl the website focusing on images
+        # Crawl the property listing
         raw_response = crawl_agent.run(
-            f"Scrape {url}. Extract all property details including title, location, price, beds, "
-            "baths, size, property type, facilities, amenities, agent info. "
-            "IMPORTANT: Extract the main property image URL and gallery image URLs."
+            f"Scrape {url}. Extract ONLY the essential property details: title, location, price, beds, "
+            "baths, size, property type, facilities. Ignore sections like agent descriptions, similar listings, comments."
         )
+
+        # Truncate raw response if it's too large
+        if hasattr(raw_response, 'content') and isinstance(raw_response.content, str):
+            # Limit content to ~50K tokens (roughly 200K characters)
+            if len(raw_response.content) > 200000:
+                raw_response.content = raw_response.content[:200000]
         
         # Format data
         format_prompt = f"""
@@ -99,7 +100,6 @@ def process_property_url(url: str) -> Dict[str, Any]:
         - details: beds, baths, sqft
         - property_type, facilities, amenities
         - agent: name, contact
-        - images: main_image (REQUIRED), gallery (array)
         - listing_url
         
         Raw data:
@@ -244,7 +244,6 @@ def find_comparable_properties(
         "tenure": "Freehold/Leasehold",
         "listing_type": "For Sale/For Rent",
         "facilities": ["Swimming Pool", "Gym", "24-hour Security", "Covered Parking", "Playground"],
-        "main_image": "https://example.com/image.jpg",
         "link": "https://www.iproperty.com.my/property/..."
       }},
       ...

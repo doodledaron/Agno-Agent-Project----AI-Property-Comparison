@@ -15,14 +15,8 @@ from agents import (
     create_main_agent
 )
 
-# Load environment variables
+# Load environment variables (for development only)
 load_dotenv()
-
-# Check for required API keys
-if not os.getenv("GROQ_API_KEY"):
-    st.error("⚠️ GROQ_API_KEY not found in environment variables. Please set it in the .env file.")
-    st.stop()
-
 
 def initialize_session_state():
     """Initialize session state variables if they don't exist."""
@@ -43,13 +37,162 @@ def initialize_session_state():
     
     if "recommendation" not in st.session_state:
         st.session_state.recommendation = None
+    
+    # API key related state
+    if "api_keys_validated" not in st.session_state:
+        st.session_state.api_keys_validated = False
+        
+    if "api_provider" not in st.session_state:
+        st.session_state.api_provider = "openai"
+        
+    if "openai_api_key" not in st.session_state:
+        st.session_state.openai_api_key = ""
+        
+    if "groq_api_key" not in st.session_state:
+        st.session_state.groq_api_key = ""
+        
+    if "firecrawl_api_key" not in st.session_state:
+        st.session_state.firecrawl_api_key = ""
+        
+    if "selected_model" not in st.session_state:
+        st.session_state.selected_model = "gpt-4o-mini"
         
     if "agents_initialized" not in st.session_state:
-        st.session_state.crawl_agent = create_crawl_agent()
-        st.session_state.format_agent = create_format_agent()
-        st.session_state.comparison_agent = create_property_comparison_agent()
-        st.session_state.main_agent = create_main_agent()
-        st.session_state.agents_initialized = True
+        st.session_state.agents_initialized = False
+
+def api_keys_input():
+    """Handle the API key input and validation."""
+    st.title("PropertyCompare Malaysia")
+    st.header("API Keys Setup")
+    
+    # API provider selection
+    api_provider = st.radio(
+        "Select AI Provider",
+        options=["OpenAI", "Groq"],
+        index=0,
+        horizontal=True
+    )
+    
+    # Get API keys based on selected provider
+    if api_provider == "OpenAI":
+        st.session_state.api_provider = "openai"
+        
+        openai_api_key = st.text_input(
+            "OpenAI API Key", 
+            value=st.session_state.get("openai_api_key", ""), 
+            type="password",
+            help="Get your API key from https://platform.openai.com/api-keys"
+        )
+        
+        model_options = ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
+        selected_model = st.selectbox(
+            "OpenAI Model",
+            options=model_options,
+            index=0,
+            help="GPT-4o mini is recommended for cost-effectiveness"
+        )
+        
+        api_key = openai_api_key
+        st.session_state.openai_api_key = openai_api_key
+        st.session_state.selected_model = selected_model
+        
+    else:  # Groq
+        st.session_state.api_provider = "groq"
+        
+        groq_api_key = st.text_input(
+            "Groq API Key", 
+            value=st.session_state.get("groq_api_key", ""), 
+            type="password",
+            help="Get your API key from https://console.groq.com"
+        )
+        
+        model_options = ["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768"]
+        selected_model = st.selectbox(
+            "Groq Model",
+            options=model_options,
+            index=0,
+            help="Llama3-70b is recommended for best performance"
+        )
+        
+        api_key = groq_api_key
+        st.session_state.groq_api_key = groq_api_key
+        st.session_state.selected_model = selected_model
+    
+    # FireCrawl API key (required for both providers)
+    firecrawl_api_key = st.text_input(
+        "FireCrawl API Key", 
+        value=st.session_state.get("firecrawl_api_key", ""), 
+        type="password",
+        help="Get your API key from https://firecrawl.dev"
+    )
+    
+    # Information about API keys
+    with st.expander("About API Keys"):
+        st.markdown("""
+        ### Why API Keys are Required
+        
+        This application uses two external AI services:
+        
+        1. **AI Provider (OpenAI or Groq)**: Powers the AI models that analyze properties and create recommendations
+        2. **FireCrawl API**: Enables web scraping to extract property details from websites
+        
+        ### Where to Get API Keys
+        
+        - **OpenAI API Key**: Sign up at [platform.openai.com](https://platform.openai.com/api-keys)
+        - **Groq API Key**: Sign up at [console.groq.com](https://console.groq.com)
+        - **FireCrawl API Key**: Sign up at [firecrawl.dev](https://firecrawl.dev)
+        
+        ### Security Note
+        
+        Your API keys are stored securely in your browser's session state and are never sent to our servers.
+        They're only used to make direct API calls from your browser to the respective services.
+        """)
+    
+    # Validate and save API keys
+    if st.button("Save and Continue", type="primary"):
+        if not api_key or not firecrawl_api_key:
+            st.error("Please provide both API keys to continue.")
+            return
+        
+        # Store API keys in session state
+        st.session_state.firecrawl_api_key = firecrawl_api_key
+        
+        # Attempt to initialize agents to validate API keys
+        try:
+            with st.spinner("Validating API keys..."):
+                # Initialize agents
+                st.session_state.crawl_agent = create_crawl_agent(
+                    firecrawl_api_key=firecrawl_api_key
+                )
+                
+                st.session_state.format_agent = create_format_agent(
+                    api_provider=st.session_state.api_provider,
+                    api_key=api_key,
+                    model_id=selected_model
+                )
+                
+                st.session_state.comparison_agent = create_property_comparison_agent(
+                    api_provider=st.session_state.api_provider,
+                    api_key=api_key,
+                    model_id=selected_model,
+                    firecrawl_api_key=firecrawl_api_key
+                )
+                
+                st.session_state.main_agent = create_main_agent(
+                    api_provider=st.session_state.api_provider,
+                    api_key=api_key,
+                    model_id=selected_model
+                )
+                
+                # Mark API keys as validated
+                st.session_state.api_keys_validated = True
+                st.session_state.agents_initialized = True
+                
+                st.success("API keys validated and saved successfully!")
+                st.rerun()  # Rerun to proceed to the next step
+        except Exception as e:
+            st.error(f"Error validating API keys: {str(e)}")
+            st.session_state.api_keys_validated = False
 
 
 def display_header():
@@ -162,7 +305,13 @@ def url_input_step():
                     status_text.text("Crawling property website...")
                     progress_bar.progress(25)
                     
-                    reference_property = process_property_url(property_url)
+                    reference_property = process_property_url(
+                        property_url,
+                        api_provider=st.session_state.api_provider,
+                        api_key=st.session_state.openai_api_key if st.session_state.api_provider == "openai" else st.session_state.groq_api_key,
+                        model_id=st.session_state.selected_model,
+                        firecrawl_api_key=st.session_state.firecrawl_api_key
+                    )
                     
                     # Update progress
                     status_text.text("Processing property data...")
@@ -409,6 +558,8 @@ def preferences_input_step():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error comparing Malaysian properties: {str(e)}")
+
+
 def display_results_step():
     """
     Display the comparison results and recommendations for Malaysian properties.
@@ -553,9 +704,11 @@ def display_results_step():
                 with col1:
                     if st.button("📋 Start Over", type="primary", use_container_width=True):
                         for key in list(st.session_state.keys()):
-                            if key != "agents_initialized":
-                                del st.session_state[key]
+                            if key not in ["groq_api_key", "firecrawl_api_key", "api_keys_validated", "agents_initialized"]:
+                                if key in st.session_state:
+                                    del st.session_state[key]
                         initialize_session_state()
+                        st.session_state.step = 1
                         st.rerun()
                 
                 with col2:
@@ -576,9 +729,11 @@ def display_results_step():
                 with col1:
                     if st.button("Start Over", type="primary"):
                         for key in list(st.session_state.keys()):
-                            if key != "agents_initialized":
-                                del st.session_state[key]
+                            if key not in ["groq_api_key", "firecrawl_api_key", "api_keys_validated", "agents_initialized"]:
+                                if key in st.session_state:
+                                    del st.session_state[key]
                         initialize_session_state()
+                        st.session_state.step = 1
                         st.rerun()
                 
                 with col2:
@@ -596,9 +751,11 @@ def display_results_step():
         
         if st.button("Start Over", type="primary"):
             for key in list(st.session_state.keys()):
-                if key != "agents_initialized":
-                    del st.session_state[key]
+                if key not in ["groq_api_key", "firecrawl_api_key", "api_keys_validated", "agents_initialized"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
             initialize_session_state()
+            st.session_state.step = 1
             st.rerun()
     
     # Property terms section with cleaner formatting
@@ -628,8 +785,60 @@ def display_results_step():
             """)
 
 
+def display_api_usage():
+    """Display API usage information and manage API keys."""
+    st.header("API Usage and Keys")
+    
+    api_usage_col1, api_usage_col2 = st.columns([2, 1])
+    
+    with api_usage_col1:
+        st.markdown("""
+        ### Current API Keys
+        
+        Your API keys are stored securely in your browser's session state.
+        """)
+        
+        # Display API key status
+        st.markdown("**GROQ API**: " + ("✅ Configured" if st.session_state.get("groq_api_key") else "❌ Not configured"))
+        st.markdown("**FireCrawl API**: " + ("✅ Configured" if st.session_state.get("firecrawl_api_key") else "❌ Not configured"))
+    
+    with api_usage_col2:
+        if st.button("Update API Keys", use_container_width=True):
+            # Reset the API keys validation flag to force re-entry
+            st.session_state.api_keys_validated = False
+            st.rerun()
+    
+    # Display estimated usage information
+    st.markdown("### Estimated API Usage")
+    
+    usage_col1, usage_col2 = st.columns(2)
+    
+    with usage_col1:
+        st.markdown("""
+        **Per Property Analysis:**
+        
+        - GROQ API: ~4-6 requests
+        - FireCrawl API: ~3-5 requests
+        
+        The exact usage depends on the complexity of the property listings and how many comparable properties are found.
+        """)
+    
+    with usage_col2:
+        st.markdown("""
+        **API Pricing (Approximate):**
+        
+        - GROQ: Free tier available, then pay-as-you-go
+        - FireCrawl: Free tier available with limited requests
+        
+        Check the respective websites for current pricing details.
+        """)
+    
+    # API cost disclaimer
+    st.info("⚠️ You are responsible for any costs associated with API usage. The application will use your API keys to make requests directly from your browser.")
+
+
 def main():
-    """Main application function with minimalistic UI design."""
+    """Main application function with minimalistic UI design and API key handling."""
     st.set_page_config(
         page_title="PropertyCompare Malaysia", 
         layout="wide",
@@ -669,22 +878,38 @@ def main():
         st.image("https://assets.grok.com/users/82ed4b11-0e6f-43c1-8956-7418be7acfec/1vx7l9bGla7ACFZz-generated_image.jpg", width=100) 
         st.title("PropertyCompare")
         
-        # Step indicator
-        st.caption("NAVIGATION")
-        step_options = ["Property Details", "Your Requirements", "Results"]
-        current_step_idx = st.session_state.step - 1
+        # API key status indicator in sidebar
+        if st.session_state.api_keys_validated:
+            st.success("API Keys: ✅ Configured")
+        else:
+            st.error("API Keys: ❌ Not Configured")
         
-        for i, step in enumerate(step_options):
-            if i == current_step_idx:
-                st.markdown(f"**→ {step}**")
-            else:
-                if st.button(step, key=f"nav_{step}", use_container_width=True):
-                    st.session_state.step = i + 1
-                    st.rerun()
+        # Step indicator - only show if API keys are validated
+        if st.session_state.api_keys_validated:
+            st.markdown("---")
+            st.caption("NAVIGATION")
+            step_options = ["Property Details", "Your Requirements", "Results", "API Usage"]
+            current_step_idx = min(st.session_state.step - 1, 3)  # Cap at 3 for API Usage
+            
+            for i, step in enumerate(step_options):
+                if i == current_step_idx:
+                    st.markdown(f"**→ {step}**")
+                else:
+                    if st.button(step, key=f"nav_{step}", use_container_width=True):
+                        if i == 3:  # API Usage
+                            st.session_state.step = 4
+                        else:
+                            st.session_state.step = i + 1
+                        st.rerun()
         
         st.markdown("---")
         st.caption("ABOUT")
         st.info("AI-powered Malaysian property comparison tool to help you make data-driven investment decisions.")
+    
+    # Check if API keys are validated before proceeding
+    if not st.session_state.api_keys_validated:
+        api_keys_input()
+        return
     
     # Header container - simplified for minimalistic design
     with st.container():
@@ -697,6 +922,9 @@ def main():
         elif st.session_state.step == 3:
             st.title("Property Analysis")
             st.caption("Expert comparison of your selected properties")
+        elif st.session_state.step == 4:
+            st.title("API Usage")
+            st.caption("Manage your API keys and usage")
     
     # Main content container
     with st.container():
@@ -706,6 +934,8 @@ def main():
             preferences_input_step()
         elif st.session_state.step == 3:
             display_results_step()
+        elif st.session_state.step == 4:
+            display_api_usage()
     
     # Footer container - minimalist version
     with st.container():
