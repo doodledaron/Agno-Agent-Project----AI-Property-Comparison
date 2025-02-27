@@ -71,38 +71,27 @@ def create_main_agent(api_provider="openai", api_key=None, model_id=None) -> Age
     )
 
 def process_property_url(url: str, api_provider="openai", api_key=None, model_id=None, firecrawl_api_key=None) -> Dict[str, Any]:
-    """
-    Extract information from a property listing URL with images.
-    """
+    """Extract essential information from a property listing URL."""
     try:
         # Create agents
         crawl_agent = create_crawl_agent(firecrawl_api_key=firecrawl_api_key)
         format_agent = create_format_agent(api_provider=api_provider, api_key=api_key, model_id=model_id)
         
-        # Crawl the property listing
+        # Focused crawl instruction - significantly reduced token usage
         raw_response = crawl_agent.run(
-            f"Scrape {url}. Extract ONLY the essential property details: title, location, price, beds, "
-            "baths, size, property type, facilities. Ignore sections like agent descriptions, similar listings, comments."
+            f"Extract ONLY key property data from {url}: title, location, price, beds, baths, size, type, facilities."
         )
 
-        # Truncate raw response if it's too large
+        # Truncate to 100K characters max
         if hasattr(raw_response, 'content') and isinstance(raw_response.content, str):
-            # Limit content to ~50K tokens (roughly 200K characters)
-            if len(raw_response.content) > 200000:
-                raw_response.content = raw_response.content[:200000]
+            raw_response.content = raw_response.content[:100000]
         
-        # Format data
+        # Streamlined formatting prompt
         format_prompt = f"""
-        Extract structured JSON from this property listing. Return ONLY valid JSON.
+        Create JSON with ONLY these fields:
+        title, location, price, details(beds/baths/sqft), property_type, facilities, listing_url
         
-        Required fields:
-        - title, location, price (MYR)
-        - details: beds, baths, sqft
-        - property_type, facilities, amenities
-        - agent: name, contact
-        - listing_url
-        
-        Raw data:
+        Raw data (first 100K chars):
         {raw_response.content}
         """
         
@@ -185,12 +174,8 @@ def find_comparable_properties(
     user_preferences: Dict[str, Any],
     comparison_agent: Any
 ) -> List[Dict[str, Any]]:
-    """
-    Find and compare properties similar to the reference property,
-    ensuring proper extraction of size, price per square foot, tenure type,
-    listing type, and common facilities.
-    """
-    # Extract key property details
+    """Find properties similar to reference, with optimized token usage."""
+    # Extract minimal necessary details
     location = reference_property.get("location", "Kuala Lumpur")
     price = reference_property.get("price", "")
     if isinstance(price, str):
@@ -199,67 +184,13 @@ def find_comparable_properties(
     reference_url = reference_property.get("listing_url", "")
     reference_title = reference_property.get("title", "Unknown Property")
 
-    # Enhanced prompt to get detailed property info including tenure, listing type, and facilities
-    # Now with explicit instruction to find different property titles
-    prompt = f"""
-    Find 2 similar property listings to this reference property, 
-    ensuring they have DIFFERENT TITLES and are in the same location:
-    
-    - Reference Property Title: "{reference_title}"
-    - Location: {location}
-    - Price: up to RM {price}
-    - Bedrooms: {beds}
-    
-    User wants: {user_preferences.get('purpose', 'Not specified')}
-    Budget: RM {user_preferences.get('budget_range', {}).get('min', 0)}-{user_preferences.get('budget_range', {}).get('max', 0)}
-    
-    CRITICAL REQUIREMENTS: 
-    1. Do NOT include the reference property with title "{reference_title}"
-    2. Do NOT include this reference property URL: {reference_url}
-    3. Properties MUST be in the same location: {location}
-    4. Extract the property size in square feet 
-    5. Calculate the price per square foot 
-    6. Determine if it's FREEHOLD or LEASEHOLD
-    7. Specify if it's FOR SALE or FOR RENT
-    8. Extract at least 3-5 common facilities (pool, gym, security, parking, etc.)
-    9. Include FULL direct URLs from iProperty.com.my or PropertyGuru.com.my
-    
-    For each property, crawl the full property page to extract all required details.
-    
-    Return as JSON array with this exact structure:
-    ```json
-    [
-      {{
-        "title": "Property Name",
-        "location": "Full Location",
-        "price": "RM 500,000",
-        "price_numeric": 500000,
-        "size": 1000,
-        "price_per_sqft": 500,
-        "bedrooms": 3,
-        "tenure": "Freehold/Leasehold",
-        "listing_type": "For Sale/For Rent",
-        "facilities": ["Swimming Pool", "Gym", "24-hour Security", "Covered Parking", "Playground"],
-        "link": "https://www.iproperty.com.my/property/..."
-      }},
-      ...
-    ]
-    ```
-    """
-
-    # To reduce token consumption, let's limit the initial search to just the basic information
-    # and then fetch additional details only for the properties we find
+    # Extremely focused initial search - minimal tokens
     search_prompt = f"""
-    Find 2 different property listings in {location} similar to reference property "{reference_title}".
-    DO NOT include the reference property.
-    Only return properties with different titles.
-    Budget: RM {user_preferences.get('budget_range', {}).get('min', 0)}-{user_preferences.get('budget_range', {}).get('max', 0)}
-    
-    Return only title, location, price, and full URL to the property listing.
-    Format as simple JSON array.
+    Find 2 property listings in {location} different from "{reference_title}".
+    Budget: RM{user_preferences.get('budget_range', {}).get('min', 0)}-{user_preferences.get('budget_range', {}).get('max', 0)}
+    Return ONLY: JSON array with title, location, price, link
     """
 
-    # Fetch results with reduced token usage
     initial_response = comparison_agent.run(search_prompt)
     
     # Parse the response
@@ -295,91 +226,127 @@ def find_comparable_properties(
                     property_item["link"] = f"https://www.iproperty.com.my{property_item['link']}"
                 elif "propertyguru" in property_item["link"]:
                     property_item["link"] = f"https://www.propertyguru.com.my{property_item['link']}"
-            
-            # Now fetch detailed information one property at a time to control token usage
+        
+            # Fetch details in stages to control token usage
             if property_item.get("link"):
-                detail_prompt = f"""
-                Extract ONLY the following details from this property listing: {property_item['link']}
-                Keep your response concise and focused on just these details.
-                
-                Return ONLY a JSON object with these fields:
-                {{
-                    "size": 1000,                                         // Size in square feet (number only)
-                    "price": 500000,                                      // Price in RM (number only)
-                    "bedrooms": 3,                                        // Number of bedrooms
-                    "tenure": "Freehold",                                 // Either "Freehold" or "Leasehold"
-                    "listing_type": "For Sale",                           // Either "For Sale" or "For Rent"
-                    "facilities": ["Swimming Pool", "Gym", "Security"]    // List of facilities (limit to 5)
-                }}
+                # Stage 1: Core property stats (smallest token count)
+                basic_prompt = f"""
+                From {property_item['link']} extract ONLY:
+                - Size in sqft (number only)
+                - Bedrooms (number)
+                - Price in RM (number)
+                Return as JSON only.
                 """
-                
-                details_response = comparison_agent.run(detail_prompt)
+                basic_response = comparison_agent.run(basic_prompt)
                 
                 try:
-                    if hasattr(details_response, 'content'):
-                        if isinstance(details_response.content, dict):
-                            details = details_response.content
-                        elif isinstance(details_response.content, str):
-                            if "```json" in details_response.content:
-                                json_text = details_response.content.split("```json")[1].split("```")[0].strip()
-                                details = json.loads(json_text)
+                    basic_details = {}
+                    if hasattr(basic_response, 'content'):
+                        if isinstance(basic_response.content, dict):
+                            basic_details = basic_response.content
+                        elif isinstance(basic_response.content, str):
+                            if "```json" in basic_response.content:
+                                json_text = basic_response.content.split("```json")[1].split("```")[0].strip()
+                                basic_details = json.loads(json_text)
                             else:
                                 try:
-                                    details = json.loads(details_response.content)
+                                    basic_details = json.loads(basic_response.content)
                                 except:
-                                    details = {}
-                            
-                        # Update property with extracted details
-                        if details.get("size"):
-                            try:
-                                property_item["size"] = int(details["size"])
-                            except:
-                                # Try to extract numeric part from string
-                                size_str = str(details["size"])
-                                size_match = re.search(r'(\d+)', size_str)
-                                if size_match:
-                                    property_item["size"] = int(size_match.group(1))
-                        
-                        if details.get("price"):
-                            try:
-                                price_val = details["price"]
-                                if isinstance(price_val, str):
-                                    price_val = price_val.replace("RM", "").replace(",", "").strip()
-                                property_item["price_numeric"] = int(float(price_val))
-                            except:
-                                pass
-                        
-                        # Additional fields
-                        if details.get("bedrooms"):
-                            property_item["bedrooms"] = details["bedrooms"]
-                        
-                        if details.get("tenure"):
-                            property_item["tenure"] = details["tenure"]
-                        
-                        if details.get("listing_type"):
-                            property_item["listing_type"] = details["listing_type"]
-                        
-                        if details.get("facilities") and isinstance(details["facilities"], list):
-                            property_item["facilities"] = details["facilities"]
-                        
-                        # If we have both size and price, calculate price per sqft
-                        if property_item.get("size") and property_item.get("price_numeric"):
-                            property_item["price_per_sqft"] = round(property_item["price_numeric"] / property_item["size"])
-                except Exception as detail_error:
-                    print(f"Error extracting details: {detail_error}")
-            
-            # Calculate price per sqft if we don't have it already
-            if not property_item.get("price_per_sqft") and property_item.get("size") and property_item.get("price"):
-                try:
-                    price_str = property_item["price"]
-                    if isinstance(price_str, str):
-                        price_str = price_str.replace("RM", "").replace(",", "").strip()
-                        price_numeric = float(price_str)
-                    else:
-                        price_numeric = float(price_str)
+                                    pass
                     
+                    # Update property with basic details
+                    if basic_details.get("size"):
+                        try:
+                            property_item["size"] = int(basic_details["size"])
+                        except:
+                            size_str = str(basic_details["size"])
+                            size_match = re.search(r'(\d+)', size_str)
+                            if size_match:
+                                property_item["size"] = int(size_match.group(1))
+                    
+                    if basic_details.get("price"):
+                        try:
+                            price_val = basic_details["price"]
+                            if isinstance(price_val, str):
+                                price_val = price_val.replace("RM", "").replace(",", "").strip()
+                            property_item["price_numeric"] = int(float(price_val))
+                        except:
+                            pass
+                    
+                    if basic_details.get("bedrooms"):
+                        property_item["bedrooms"] = basic_details["bedrooms"]
+                    
+                except Exception as basic_error:
+                    print(f"Error processing basic details: {basic_error}")
+                
+                # Stage 2: Additional details only if needed
+                if not property_item.get("tenure") or not property_item.get("listing_type"):
+                    extra_prompt = f"""
+                    From {property_item['link']} extract ONLY:
+                    - Tenure (Freehold or Leasehold)
+                    - Listing type (For Sale or For Rent)
+                    Return as JSON only.
+                    """
+                    extra_response = comparison_agent.run(extra_prompt)
+                    
+                    try:
+                        extra_details = {}
+                        if hasattr(extra_response, 'content'):
+                            if isinstance(extra_response.content, dict):
+                                extra_details = extra_response.content
+                            elif isinstance(extra_response.content, str):
+                                if "```json" in extra_response.content:
+                                    json_text = extra_response.content.split("```json")[1].split("```")[0].strip()
+                                    extra_details = json.loads(json_text)
+                                else:
+                                    try:
+                                        extra_details = json.loads(extra_response.content)
+                                    except:
+                                        pass
+                        
+                        # Update property with extra details
+                        if extra_details.get("tenure"):
+                            property_item["tenure"] = extra_details["tenure"]
+                        if extra_details.get("listing_type"):
+                            property_item["listing_type"] = extra_details["listing_type"]
+                            
+                    except Exception as extra_error:
+                        print(f"Error processing extra details: {extra_error}")
+                
+                # Stage 3: Facilities (only if needed and first two stages succeeded)
+                if not property_item.get("facilities") and property_item.get("price_numeric") and property_item.get("size"):
+                    facility_prompt = f"""
+                    List only 3-5 main facilities at {property_item['link']}.
+                    Return as JSON array ["facility1", "facility2", ...]
+                    """
+                    facility_response = comparison_agent.run(facility_prompt)
+                    
+                    try:
+                        if hasattr(facility_response, 'content'):
+                            if isinstance(facility_response.content, list):
+                                property_item["facilities"] = facility_response.content[:5]  # Limit to 5
+                            elif isinstance(facility_response.content, str):
+                                if "```json" in facility_response.content:
+                                    json_text = facility_response.content.split("```json")[1].split("```")[0].strip()
+                                    facilities = json.loads(json_text)
+                                    if isinstance(facilities, list):
+                                        property_item["facilities"] = facilities[:5]  # Limit to 5
+                                else:
+                                    try:
+                                        facilities = json.loads(facility_response.content)
+                                        if isinstance(facilities, list):
+                                            property_item["facilities"] = facilities[:5]  # Limit to 5
+                                    except:
+                                        pass
+                    except Exception as facility_error:
+                        print(f"Error processing facilities: {facility_error}")
+            
+            # Calculate price per sqft if we have the necessary data
+            if not property_item.get("price_per_sqft") and property_item.get("size") and property_item.get("price_numeric"):
+                try:
                     size = float(property_item["size"])
-                    property_item["price_per_sqft"] = round(price_numeric / size)
+                    if size > 0:
+                        property_item["price_per_sqft"] = round(property_item["price_numeric"] / size)
                 except:
                     pass
             
@@ -392,6 +359,10 @@ def find_comparable_properties(
                     property_item["listing_type"] = "For Rent"
                 else:
                     property_item["listing_type"] = "For Sale"
+            
+            # Default tenure if not found
+            if not property_item.get("tenure"):
+                property_item["tenure"] = "Unknown"
             
             # Ensure we have facilities
             if not property_item.get("facilities") or not property_item["facilities"]:
@@ -407,139 +378,62 @@ def find_comparable_properties(
         return []
     
     
-def generate_final_recommendation(
-    reference_property: Dict[str, Any],
-    comparable_properties: List[Dict[str, Any]],
-    user_preferences: Dict[str, Any],
-    main_agent: Agent
-) -> str:
-    """
-    Generate comprehensive expert property recommendation with enhanced property details.
-    Formatted for better readability in a minimalistic UI.
-    """
-    # Structured expert recommendation prompt with improved format and spacing
+def generate_final_recommendation(reference_property: Dict[str, Any], comparable_properties: List[Dict[str, Any]], user_preferences: Dict[str, Any], main_agent: Agent) -> str:
+    """Generate optimized property recommendation."""
+    # Strip down properties to essential fields only to reduce tokens
+    stripped_reference = {
+        "title": reference_property.get("title", ""),
+        "location": reference_property.get("location", ""),
+        "price": reference_property.get("price", ""),
+        "size": reference_property.get("details", {}).get("sqft", ""),
+        "beds": reference_property.get("details", {}).get("beds", ""),
+        "baths": reference_property.get("details", {}).get("baths", ""),
+        "facilities": reference_property.get("facilities", [])[:3],  # Limit to top 3
+        "tenure": reference_property.get("tenure", "Unknown"),
+        "listing_type": reference_property.get("listing_type", "Unknown"),
+        "listing_url": reference_property.get("listing_url", "")
+    }
+    
+    # Similarly strip comparable properties
+    stripped_comparables = []
+    for prop in comparable_properties:
+        stripped_prop = {
+            "title": prop.get("title", ""),
+            "location": prop.get("location", ""),
+            "price": prop.get("price", ""),
+            "price_numeric": prop.get("price_numeric", 0),
+            "size": prop.get("size", 0),
+            "bedrooms": prop.get("bedrooms", ""),
+            "tenure": prop.get("tenure", "Unknown"),
+            "listing_type": prop.get("listing_type", "Unknown"),
+            "facilities": prop.get("facilities", [])[:3],  # Limit to top 3
+            "link": prop.get("link", "")
+        }
+        stripped_comparables.append(stripped_prop)
+    
+    # Simplified user preferences - only include what's needed
+    minimal_preferences = {
+        "purpose": user_preferences.get("purpose", ""),
+        "budget_range": user_preferences.get("budget_range", {}),
+    }
+    
+    # Focused, shorter prompt
     prompt = f"""
-    As a Malaysian property expert, analyze these properties:
+    As Malaysian property expert, compare:
     
-    REFERENCE PROPERTY:
-    {json.dumps(reference_property, indent=2)}
+    REF: {json.dumps(stripped_reference)}
     
-    ALTERNATIVES:
-    {json.dumps(comparable_properties, indent=2)}
+    ALT: {json.dumps(stripped_comparables)}
     
-    USER PREFERENCES:
-    {json.dumps(user_preferences, indent=2)}
+    PREFS: {json.dumps(minimal_preferences)}
     
-    Your analysis should be formatted for a CLEAN, MINIMALISTIC UI with good spacing between sections.
-    Use Markdown formatting with clean headers, bullet points, and concise text.
+    Create markdown report with:
+    1. Market Value Analysis (ref property, alternatives, price comparison)
+    2. Property Comparison (location, facilities, size)
+    3. Investment Potential
+    4. Expert Recommendation (best value, pros/cons, negotiation tips)
     
-    Follow this EXACT structure for your analysis:
-    
-    # Property Comparison Analysis
-    
-    ## 1. Market Value Analysis
-    
-    ### Reference Property: [PROPERTY NAME]
-    * **Price:** RM [PRICE]
-    * **Size:** [SIZE] sqft
-    * **Price per sqft:** RM [CALCULATED VALUE]
-    * **Tenure:** [FREEHOLD/LEASEHOLD]
-    * **Listing Type:** [FOR SALE/FOR RENT]
-    * **Link:** [FULL PROPERTY URL]
-    
-    ### Alternatives
-    
-    **1. [PROPERTY NAME]**
-    * **Price:** RM [PRICE]
-    * **Size:** [SIZE] sqft
-    * **Price per sqft:** RM [CALCULATED VALUE]
-    * **Tenure:** [FREEHOLD/LEASEHOLD]
-    * **Listing Type:** [FOR SALE/FOR RENT]
-    * **Link:** [FULL PROPERTY URL]
-    
-    **2. [PROPERTY NAME]**
-    * **Price:** RM [PRICE]
-    * **Size:** [SIZE] sqft
-    * **Price per sqft:** RM [CALCULATED VALUE]
-    * **Tenure:** [FREEHOLD/LEASEHOLD]
-    * **Listing Type:** [FOR SALE/FOR RENT]
-    * **Link:** [FULL PROPERTY URL]
-    
-    ### Price Comparison
-    
-    | Property | Price | Size (sqft) | Price/sqft |
-    |----------|-------|-------------|------------|
-    | Reference | RM [PRICE] | [SIZE] | RM [VALUE] |
-    | Alternative 1 | RM [PRICE] | [SIZE] | RM [VALUE] |
-    | Alternative 2 | RM [PRICE] | [SIZE] | RM [VALUE] |
-    
-    ### Conclusion
-    [CONCISE PRICE ANALYSIS - 2-3 SENTENCES MAX]
-    
-    ## 2. Property Comparison
-    
-    ### Location 
-    * **Reference:** [LOCATION DETAILS]
-    * **Alternatives:** [COMPARISON]
-    
-    ### Facilities
-    * **Reference:** [LIST KEY FACILITIES]
-    * **Alternative 1:** [LIST KEY FACILITIES]
-    * **Alternative 2:** [LIST KEY FACILITIES]
-    
-    ### Size and Layout
-    * **Reference:** [SIZE AND BEDROOMS]
-    * **Alternatives:** [COMPARISON]
-    
-    ### Accessibility
-    [BRIEF ANALYSIS BASED ON USER PREFERENCES]
-    
-    ### Property Condition
-    [BRIEF ASSESSMENT]
-    
-    ## 3. Investment Potential
-    
-    ### Market Trends
-    [CONCISE AREA SPECIFIC ANALYSIS - 2-3 SENTENCES]
-    
-    ### Value Appreciation 
-    * [BRIEF GROWTH ASSESSMENT]
-    * [IMPACT OF TENURE ON FUTURE VALUE]
-    
-    ### Rental Yield Estimates 
-    | Property | Est. Monthly Rental | Annual Yield |
-    |----------|---------------------|--------------|
-    | Reference | RM [AMOUNT] | [PERCENTAGE]% |
-    | Alternative 1 | RM [AMOUNT] | [PERCENTAGE]% |
-    | Alternative 2 | RM [AMOUNT] | [PERCENTAGE]% |
-    
-    ## 4. Expert Recommendation
-    
-    ### Best Value: [RECOMMENDED PROPERTY NAME]
-    * **Price:** RM [PRICE]
-    * **Size:** [SIZE] sqft
-    * **Tenure:** [FREEHOLD/LEASEHOLD]
-    * **Key Facilities:** [TOP 3 FACILITIES]
-    * **Property URL:** [FULL URL]
-    
-    ### Why This Property?
-    [2-3 SENTENCES EXPLAINING THE CHOICE]
-    
-    ### Pros
-    * [PRO 1]
-    * [PRO 2]
-    * [PRO 3]
-    
-    ### Cons
-    * [CON 1]
-    * [CON 2]
-    
-    ### Negotiation Tips
-    * [TIP 1]
-    * [TIP 2]
-    
-    ### Final Verdict
-    [CONCISE FINAL RECOMMENDATION - 1-2 SENTENCES]
+    ONLY include essential data. Be concise.
     """
     
     # Get recommendation
@@ -550,4 +444,3 @@ def generate_final_recommendation(
         return response.content if isinstance(response.content, str) else str(response.content)
     
     return "Could not generate a recommendation."
-

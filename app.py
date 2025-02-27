@@ -64,6 +64,18 @@ def api_keys_input():
     """Handle the API key input and validation."""
     st.title("PropertyCompare Malaysia")
     st.header("API Keys Setup")
+
+        # Add new token usage management info
+    with st.expander("Managing Token Usage"):
+        st.markdown("""
+        ### Token Usage Management
+        
+        This application is optimized to minimize API token usage, but complex property listings may still consume significant tokens. Here are some tips:
+        
+        - **Choose GPT-3.5 for initial searches** if you're facing token limitations
+        - **Select properties with simpler listings** to reduce token consumption
+        - **Use Groq with Llama models** for potentially higher token limits
+        """)
     
     # API provider selection
     api_provider = st.radio(
@@ -295,40 +307,43 @@ def url_input_step():
             
             st.session_state.property_url = property_url
             
-            with st.spinner("Extracting property details from Malaysian property website..."):
-                try:
-                    # Progress indicator
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    # Step 1: Extract property details
-                    status_text.text("Crawling property website...")
-                    progress_bar.progress(25)
-                    
-                    reference_property = process_property_url(
-                        property_url,
-                        api_provider=st.session_state.api_provider,
-                        api_key=st.session_state.openai_api_key if st.session_state.api_provider == "openai" else st.session_state.groq_api_key,
-                        model_id=st.session_state.selected_model,
-                        firecrawl_api_key=st.session_state.firecrawl_api_key
-                    )
-                    
-                    # Update progress
-                    status_text.text("Processing property data...")
-                    progress_bar.progress(75)
-                    
-                    if reference_property and "title" in reference_property:
-                        st.session_state.reference_property = reference_property
-                        status_text.text("Property details extracted successfully!")
-                        progress_bar.progress(100)
-                        
-                        st.session_state.step = 2
-                        st.rerun()
-                    else:
-                        st.error("Could not extract property details. Please try another URL or use the manual entry option.")
-                    
-                except Exception as e:
-                    st.error(f"Error extracting property details: {str(e)}")
+    with st.spinner("Extracting property details from Malaysian property website..."):
+        try:
+            # Progress indicator
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Step 1: Extract property details with token optimization message
+            status_text.text("Crawling property website (optimized for token efficiency)...")
+            progress_bar.progress(25)
+            
+            reference_property = process_property_url(
+                property_url,
+                api_provider=st.session_state.api_provider,
+                api_key=st.session_state.openai_api_key if st.session_state.api_provider == "openai" else st.session_state.groq_api_key,
+                model_id=st.session_state.selected_model,
+                firecrawl_api_key=st.session_state.firecrawl_api_key
+            )
+            
+            # Update progress
+            status_text.text("Processing property data...")
+            progress_bar.progress(75)
+            
+            if reference_property and "title" in reference_property:
+                st.session_state.reference_property = reference_property
+                status_text.text("Property details extracted successfully!")
+                progress_bar.progress(100)
+                
+                st.session_state.step = 2
+                st.rerun()
+            else:
+                st.error("Could not extract property details. Please try another URL or use the manual entry option.")
+            
+        except Exception as e:
+            if "context_length_exceeded" in str(e) or "maximum context length" in str(e):
+                st.error("Token limit exceeded. Try a simpler property listing or use a model with higher token limits.")
+            else:
+                st.error(f"Error extracting property details: {str(e)}")
 
 
 def preferences_input_step():
@@ -522,42 +537,56 @@ def preferences_input_step():
             }
             st.session_state.user_preferences = user_preferences
             
-            with st.spinner("Finding and comparing Malaysian properties... (This may take a moment)"):
-                try:
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    status_text.text("Searching for comparable properties on Malaysian property websites...")
-                    progress_bar.progress(25)
-                    
-                    comparable_properties = find_comparable_properties(
-                        st.session_state.reference_property,
-                        user_preferences,
-                        st.session_state.comparison_agent
-                    )
-                    st.session_state.comparable_properties = comparable_properties
-                    
-                    status_text.text("Analyzing property features and investment metrics...")
-                    progress_bar.progress(50)
-                    
-                    status_text.text("Preparing personalized recommendations...")
-                    progress_bar.progress(75)
-                    
-                    recommendation = generate_final_recommendation(
-                        st.session_state.reference_property,
-                        comparable_properties,
-                        user_preferences,
-                        st.session_state.main_agent
-                    )
-                    st.session_state.recommendation = recommendation
-                    
-                    status_text.text("Analysis complete!")
-                    progress_bar.progress(100)
-                    
-                    st.session_state.step = 3
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error comparing Malaysian properties: {str(e)}")
+    # Inside preferences_input_step() function, update the find comparable properties section:
+    with st.spinner("Finding and comparing Malaysian properties... (This may take a moment)"):
+        try:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            status_text.text("Searching for comparable properties (token-optimized)...")
+            progress_bar.progress(25)
+            
+            # Consider showing how many properties you're searching for
+            st.info("Finding 2 comparable properties in the same location...")
+            
+            comparable_properties = find_comparable_properties(
+                st.session_state.reference_property,
+                user_preferences,
+                st.session_state.comparison_agent
+            )
+            
+            # Show how many properties were found
+            if comparable_properties:
+                st.success(f"Found {len(comparable_properties)} comparable properties!")
+            
+            st.session_state.comparable_properties = comparable_properties
+            
+            status_text.text("Analyzing property features and investment metrics...")
+            progress_bar.progress(50)
+            
+            status_text.text("Preparing personalized recommendations...")
+            progress_bar.progress(75)
+            
+            recommendation = generate_final_recommendation(
+                st.session_state.reference_property,
+                comparable_properties,
+                user_preferences,
+                st.session_state.main_agent
+            )
+            st.session_state.recommendation = recommendation
+            
+            status_text.text("Analysis complete!")
+            progress_bar.progress(100)
+            
+            st.session_state.step = 3
+            st.rerun()
+        except Exception as e:
+            if "context_length_exceeded" in str(e) or "maximum context length" in str(e):
+                st.error("Token limit exceeded. The property data is too large for the current model. Try selecting a model with higher token limits or using a simpler property listing.")
+                st.info("Tip: You can use the 'API Usage' page to update your settings.")
+            else:
+                st.error(f"Error comparing Malaysian properties: {str(e)}")
+                st.info("Please try again or contact support if the issue persists.")
 
 
 def display_results_step():
